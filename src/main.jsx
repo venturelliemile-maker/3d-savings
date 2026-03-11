@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { createRoot } from "react-dom/client";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend } from "recharts";
 
@@ -56,8 +56,8 @@ function App() {
   const [newPrint, setNewPrint] = useState({ name: "", type: "purchase", materialId: "pla", weightG: "", hours: "", savedHours: "", savedMinutes: "", marketPrice: "", goalId: "", date: new Date().toISOString().slice(0, 10) });
   const [dragIdx, setDragIdx] = useState(null);
 
-  const saveGoals = useCallback(g => { setGoals(g); save("goals", g); }, []);
-  const savePrints = useCallback(p => { setPrints(p); save("prints", p); }, []);
+  const saveGoals    = useCallback(g => { setGoals(g);    save("goals",    g); }, []);
+  const savePrints   = useCallback(p => { setPrints(p);   save("prints",   p); }, []);
   const saveSettings = useCallback(s => { setSettings(s); save("settings", s); }, []);
 
   const totalSaved    = prints.reduce((s, p) => s + (p.saving || 0), 0);
@@ -103,6 +103,34 @@ function App() {
     setShowPrintForm(false);
   }
 
+  function exportBackup() {
+    const data = JSON.stringify({ goals, prints, settings }, null, 2);
+    const blob = new Blob([data], { type: "application/json" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `3d-savings-backup-${new Date().toISOString().slice(0,10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importBackup(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = ev => {
+      try {
+        const data = JSON.parse(ev.target.result);
+        if (data.goals)    saveGoals(data.goals);
+        if (data.prints)   savePrints(data.prints);
+        if (data.settings) saveSettings(data.settings);
+        alert("Backup importato con successo!");
+      } catch { alert("File non valido."); }
+    };
+    reader.readAsText(file);
+    e.target.value = "";
+  }
+
   function onDragStart(i) { setDragIdx(i); }
   function onDragOver(e, i) {
     e.preventDefault();
@@ -133,6 +161,7 @@ function App() {
   return (
     <div style={{ background: "#13131f", minHeight: "100vh", color: "#e2e8f0", fontFamily: "system-ui,sans-serif", paddingBottom: 40 }}>
 
+      {/* Header */}
       <div style={{ background: "#1a1a2e", borderBottom: "1px solid #2a2a4e", padding: "18px 28px", display: "flex", alignItems: "center", gap: 16 }}>
         <span style={{ fontSize: 26 }}>🖨️</span>
         <div>
@@ -145,6 +174,7 @@ function App() {
         </div>
       </div>
 
+      {/* Tabs */}
       <div style={{ display: "flex", gap: 4, padding: "16px 28px 0", borderBottom: "1px solid #2a2a4e" }}>
         {[["dashboard","📊 Dashboard"],["prints","🗂 Stampe"],["stats","📈 Statistiche"],["settings","⚙️ Impostazioni"]].map(([id, label]) => (
           <button key={id} onClick={() => setTab(id)} style={{ background: tab===id ? "#6366f1" : "transparent", border: "none", borderRadius: "8px 8px 0 0", padding: "8px 20px", color: tab===id ? "#fff" : "#6b7280", fontWeight: 600, cursor: "pointer", fontSize: 14 }}>{label}</button>
@@ -153,6 +183,7 @@ function App() {
 
       <div style={{ padding: "24px 28px", maxWidth: 900, margin: "0 auto" }}>
 
+        {/* DASHBOARD */}
         {tab === "dashboard" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -223,6 +254,7 @@ function App() {
           </div>
         )}
 
+        {/* STAMPE */}
         {tab === "prints" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -304,6 +336,7 @@ function App() {
           </div>
         )}
 
+        {/* STATISTICHE */}
         {tab === "stats" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
             {prints.length === 0 ? (
@@ -369,6 +402,7 @@ function App() {
           </div>
         )}
 
+        {/* IMPOSTAZIONI */}
         {tab === "settings" && (
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <Card>
@@ -405,6 +439,17 @@ function App() {
                 <button onClick={() => saveSettings({ ...settings, materials: [...settings.materials, { id: Date.now().toString(), name: "Nuovo", costPerKg: 20 }] })}
                   style={{ ...btn("#374151"), alignSelf: "flex-start", marginTop: 4 }}>+ Aggiungi materiale</button>
               </div>
+            </Card>
+            <Card>
+              <div style={{ fontWeight: 700, marginBottom: 16 }}>💾 Backup dati</div>
+              <div style={{ display: "flex", gap: 10 }}>
+                <button style={btn("#10b981")} onClick={exportBackup}>⬇️ Esporta backup</button>
+                <label style={{ ...btn("#6366f1"), cursor: "pointer" }}>
+                  ⬆️ Importa backup
+                  <input type="file" accept=".json" style={{ display: "none" }} onChange={importBackup} />
+                </label>
+              </div>
+              <div style={{ fontSize: 12, color: "#6b7280", marginTop: 10 }}>Esporta regolarmente un backup per non perdere i dati.</div>
             </Card>
             <div style={{ fontSize: 12, color: "#6b7280" }}>Le modifiche vengono salvate automaticamente.</div>
           </div>
