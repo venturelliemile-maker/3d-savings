@@ -5,21 +5,17 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Terminale di affinamento</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #030914; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   body.idle { cursor: none; }
   canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
-  /* Effetto tubo catodico: righe di scansione, vignettatura, leggero sfarfallio */
-  .crt { position: fixed; inset: 0; pointer-events: none; }
+  /* Ripiego senza WebGL: righe di scansione e vignettatura in CSS */
+  .crt { position: fixed; inset: 0; pointer-events: none; display: none; }
+  body.nogl .crt { display: block; }
   .scan {
-    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.22) 3px, rgba(0,0,0,0) 4px);
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.25) 3px, rgba(0,0,0,0) 4px);
     mix-blend-mode: multiply;
   }
-  .vignette {
-    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%);
-    animation: flicker 7s infinite steps(1);
-  }
-  @keyframes flicker { 0%, 100% { opacity: 1; } 47% { opacity: .93; } 48% { opacity: 1; } 81% { opacity: .96; } 82% { opacity: 1; } }
-  @media (prefers-reduced-motion: reduce) { .vignette { animation: none; } }
+  .vignette { background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.6) 100%); }
 </style>
 </head>
 <body>
@@ -28,39 +24,164 @@
 <div class="crt vignette"></div>
 <script>
 (() => {
-  const cv = document.getElementById('c');
-  const ctx = cv.getContext('2d');
-  const INK = '#b8ecff', DIM = 'rgba(184,236,255,.55)', BG = '#050d1a';
+  // Colore del fosforo: aggiungi ?colore=verde oppure ?colore=ambra all'indirizzo.
+  const PAL = {
+    blu:   { ink: '#b8ecff', dim: 'rgba(184,236,255,.55)', glow: 'rgba(120,220,255,.7)', bg: '5,13,26',  tint: [.35, .8, 1] },
+    verde: { ink: '#b6ffd0', dim: 'rgba(182,255,208,.55)', glow: 'rgba(90,255,150,.7)',  bg: '3,18,10',  tint: [.3, 1, .5] },
+    ambra: { ink: '#ffd9a0', dim: 'rgba(255,217,160,.55)', glow: 'rgba(255,170,60,.7)',  bg: '20,11,3',  tint: [1, .65, .2] },
+  };
+  const P = PAL[new URLSearchParams(location.search).get('colore')] || PAL.blu;
+  const INK = P.ink, DIM = P.dim;
   const FONT = '"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
-  const SLOW = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.35 : 1;
+  const REDUCED = matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const SLOW = REDUCED ? 0.35 : 1;
   const NAMES = ['Tessera', 'Vetrata', 'Cardine', 'Brughiera', 'Lanterna', 'Meridiana', 'Scogliera', 'Ardesia', 'Ginepro', 'Falesia'];
   const BINS = 5;
+
+  // Il contenuto viene disegnato su una tela nascosta; lo shader WebGL la mostra
+  // attraverso il "vetro" del tubo catodico (curvatura, righe, bagliore, disturbi).
+  const view = document.getElementById('c');
+  const cv = document.createElement('canvas');
+  const ctx = cv.getContext('2d');
+  const gl = view.getContext('webgl', { antialias: false, alpha: false });
+  let prog, tex, U = {};
+
+  const VS = 'attribute vec2 p; varying vec2 v; void main(){ v = p * .5 + .5; gl_Position = vec4(p, 0., 1.); }';
+  const FS = `
+    precision mediump float;
+    uniform sampler2D uTex; uniform vec2 uRes; uniform float uTime, uOn, uFx; uniform vec3 uTint;
+    varying vec2 v;
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+    vec3 tx(vec2 uv){
+      if (uv.x < 0. || uv.y < 0. || uv.x > 1. || uv.y > 1.) return vec3(0.);
+      return texture2D(uTex, uv).rgb;
+    }
+    void main(){
+      const float K = .09;
+      vec2 c = v * 2. - 1.;
+      float r2 = dot(c, c);
+      c *= (1. + K * r2) / (1. + K);               // curvatura del vetro
+      vec2 cm = c;
+      // accensione: prima una riga orizzontale, poi si apre in verticale
+      float h = smoothstep(0., .35, uOn), vv = smoothstep(.3, 1., uOn);
+      c.x /= max(h, .001); c.y /= max(vv * vv, .004);
+      vec2 uv = c * .5 + .5;
+
+      float t = mod(uTime, 500.);
+      // tremolio orizzontale riga per riga e, ogni tanto, uno strappo
+      float line = floor(uv.y * uRes.y / 3.);
+      uv.x += (hash(vec2(line, floor(t * 30.))) - .5) * .0011 * uFx;
+      float gt = floor(t * 2.5);
+      float tear = step(.93, hash(vec2(gt, 3.))) * step(abs(uv.y - hash(vec2(gt, 9.))), .035);
+      uv.x += tear * .012 * sin(t * 90.) * uFx;
+
+      // aberrazione cromatica verso i bordi
+      float off = .0005 * (1. + 2. * r2);
+      vec3 col = vec3(tx(uv + vec2(off, 0.)).r, tx(uv).g, tx(uv - vec2(off, 0.)).b);
+
+      // alone del fosforo
+      vec2 px = 1. / uRes; vec3 bloom = vec3(0.);
+      for (int i = 0; i < 8; i++) {
+        float a = float(i) * .785398;
+        vec2 d = vec2(cos(a), sin(a)) * px;
+        bloom += tx(uv + d * 2.5) + tx(uv + d * 6.);
+      }
+      col += bloom * .032;
+
+      // righe di scansione
+      col *= .8 + .2 * sin(uv.y * uRes.y * 2.0944);
+      // banda luminosa che scorre lungo lo schermo
+      float band = exp(-pow((fract(uv.y + t * .1) - .5) * 8., 2.));
+      col += col * band * .35 + uTint * band * .02;
+      // sfarfallio, grana, luminosita' di fondo del tubo
+      col *= 1. - .05 * hash(vec2(floor(t * 50.), 1.)) * uFx;
+      col += (hash(gl_FragCoord.xy + t * 60.) - .5) * .05;
+      col += uTint * .022;
+      col *= 1. + (1. - vv) * 4.;
+
+      // vignettatura e angoli arrotondati
+      col *= 1. - .5 * pow(r2 * .5, 1.6);
+      vec2 q = abs(cm) - vec2(.9);
+      float m = length(max(q, 0.)) - .1;
+      float mask = smoothstep(0., -.025, m);
+      // riflesso del vetro
+      col += .035 * smoothstep(1.1, 0., length(cm - vec2(-.55, .6)));
+      gl_FragColor = vec4(max(col, 0.) * mask, 1.);
+    }`;
+
+  function initGL() {
+    if (!gl) return false;
+    const mk = (type, src) => { const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); return s; };
+    prog = gl.createProgram();
+    gl.attachShader(prog, mk(gl.VERTEX_SHADER, VS));
+    gl.attachShader(prog, mk(gl.FRAGMENT_SHADER, FS));
+    gl.linkProgram(prog);
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
+    gl.useProgram(prog);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'p');
+    gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+    tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+    for (const n of ['uRes', 'uTime', 'uOn', 'uFx', 'uTint']) U[n] = gl.getUniformLocation(prog, n);
+    gl.uniform3fv(U.uTint, P.tint);
+    gl.uniform1f(U.uFx, REDUCED ? 0 : 1);
+    return true;
+  }
+  const hasGL = initGL();
+  if (!hasGL) { view.replaceWith(cv); document.body.classList.add('nogl'); }
 
   let W = 0, H = 0, dpr = 1, cell = 40, cols = 0, rows = 0, top = 0, bottom = 0;
   let cells = [], bins = [], fileName = '', done = 0;
   const rnd = (a, b) => a + Math.random() * (b - a);
   const digit = () => (Math.random() * 10) | 0;
 
-  function newFile() {
+  // Sequenza di avvio battuta a schermo prima di ogni file.
+  let boot = 0, bootLines = [];
+  const BOOT_CPS = 46, BOOT_HOLD = 1.4;
+  function startBoot() {
+    bootLines = [
+      'TERMINALE DI AFFINAMENTO',
+      'FIRMWARE 4.1.7 // PIANO INTERRATO',
+      '',
+      'VERIFICA MEMORIA ............. OK',
+      'SINCRONIA TUBO CATODICO ...... OK',
+      'COLLEGAMENTO ARCHIVIO ........ OK',
+      'APERTURA FILE ' + fileName.toUpperCase(),
+    ];
+    boot = 0.0001;
+  }
+  const bootLen = () => bootLines.reduce((s, l) => s + l.length + 8, 0) / BOOT_CPS + BOOT_HOLD;
+
+  function newFile(progress) {
     fileName = NAMES[(Math.random() * NAMES.length) | 0] + '-' + String((Math.random() * 90 + 10) | 0);
-    bins = Array.from({ length: BINS }, () => ({ p: 0, shown: 0, open: 0 }));
-    done = 0;
+    bins = Array.from({ length: BINS }, () => { const p = progress ? rnd(.05, .55) : 0; return { p, shown: 0, open: 0 }; });
+    done = 0; phase = 'idle'; timer = 4;
+    for (const q of cells) { q.st = 0; q.a = 0; q.d = digit(); }
+    startBoot();
   }
 
   function resize() {
     dpr = Math.min(window.devicePixelRatio || 1, 2);
     W = innerWidth; H = innerHeight;
-    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    cv.width = view.width = Math.round(W * dpr); cv.height = view.height = Math.round(H * dpr);
+    if (hasGL) gl.viewport(0, 0, view.width, view.height);
     cell = Math.max(26, Math.min(52, Math.min(W, H) / 17));
-    top = cell * 2.1; bottom = H - cell * 3.1;
+    top = cell * 2.5; bottom = H - cell * 3.4;
     cols = Math.ceil(W / cell) + 4; rows = Math.ceil((bottom - top) / cell) + 4;
     cells = [];
     for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
-      cells.push({ c, r, d: digit(), ph: rnd(0, 6.28), sp: rnd(.5, 1.4), a: 1, st: 0, t: 0, delay: 0, sx: 0, sy: 0, ss: 1 });
+      cells.push({ c, r, d: digit(), ph: rnd(0, 6.28), sp: rnd(.5, 1.4), a: boot > 0 ? 0 : 1, st: 0, t: 0, delay: 0, sx: 0, sy: 0 });
+    if (phase !== 'idle') { phase = 'idle'; timer = 3; blobs[0].hold = 0; }
   }
 
   // Punti di "attenzione" che vagano: le cifre vicine si ingrossano e tremano.
-  const blobs = [0, 1, 2].map(i => ({ k: rnd(0, 100), x: 0, y: 0, hold: 0, i }));
+  const blobs = [0, 1, 2].map(() => ({ k: rnd(0, 100), x: 0, y: 0, hold: 0 }));
   const mouse = { x: -999, y: -999, w: 0 };
   function moveBlob(b, t) {
     if (b.hold > 0) return;
@@ -71,8 +192,8 @@
 
   // Ciclo di affinamento: selezione -> volo nel contenitore -> ricarica.
   let phase = 'idle', timer = 5, target = 0, flying = 0;
-  const binX = i => W * (i + .5) / BINS;
-  const binW = () => Math.min(W / BINS * .62, cell * 5.2);
+  const binX = i => W * (.08 + .84 * (i + .5) / BINS);
+  const binW = () => Math.min(W * .84 / BINS * .62, cell * 5.2);
   const binY = () => bottom + cell * .7;
 
   function startEvent(ox, oy) {
@@ -90,17 +211,22 @@
     b.hold = 1; phase = 'gather'; timer = 1.5; flying = n;
   }
 
-  let last = performance.now(), T = 0, hint = 6;
+  let last = performance.now(), T = 0, hint = 9, power = 0;
   function frame(now) {
-    const dt = Math.min(.05, (now - last) / 1000) * SLOW; last = now; T += dt;
+    const real = Math.min(.05, (now - last) / 1000), dt = real * SLOW; last = now; T += dt;
+    power = Math.min(1, power + real / 1.3);
     const ox = Math.sin(T * .05) * cell * .9, oy = Math.cos(T * .037) * cell * .9;
     blobs.forEach(b => moveBlob(b, T));
     mouse.w = Math.max(0, mouse.w - dt * .5);
+    const booting = boot > 0;
 
     // --- logica ---
-    if (done > 0) {
+    if (booting) {
+      if (power >= 1) boot += real;
+      if (boot > bootLen()) boot = 0;
+    } else if (done > 0) {
       done -= dt;
-      if (done <= 0) newFile();
+      if (done <= 0) newFile(false);
     } else if (phase === 'idle') {
       timer -= dt;
       if (timer <= 0) startEvent(ox, oy);
@@ -123,16 +249,59 @@
     }
     bins.forEach((b, i) => {
       if (!(i === target && phase !== 'idle')) b.open = Math.max(0, b.open - dt * 1.5);
-      b.shown += (b.p - b.shown) * Math.min(1, dt * 3);
+      if (!booting) b.shown += (b.p - b.shown) * Math.min(1, dt * 3);
     });
 
     // --- disegno ---
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
-    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.font = `500 ${cell * .42}px ${FONT}`;
-    ctx.fillStyle = INK;
+    // non si cancella del tutto: resta la scia, come la persistenza del fosforo
+    ctx.fillStyle = `rgba(${P.bg},${booting ? .6 : .42})`; ctx.fillRect(0, 0, W, H);
+    ctx.textBaseline = 'middle'; ctx.fillStyle = INK; ctx.strokeStyle = INK;
+    ctx.shadowColor = P.glow;
 
+    if (booting) drawBoot(); else drawWork(dt, ox, oy);
+
+    if (hint > 0) {
+      hint -= real;
+      ctx.globalAlpha = Math.min(1, hint) * .7; ctx.fillStyle = INK; ctx.textAlign = 'right';
+      ctx.font = `500 ${cell * .28}px ${FONT}`;
+      ctx.fillText('clic o F: schermo intero', W - cell * 2, H - cell * .6);
+      ctx.globalAlpha = 1;
+    }
+
+    if (hasGL) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
+      gl.uniform2f(U.uRes, W, H);
+      gl.uniform1f(U.uTime, now / 1000);
+      gl.uniform1f(U.uOn, power);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+    requestAnimationFrame(frame);
+  }
+
+  function drawBoot() {
+    let chars = Math.max(0, boot * BOOT_CPS);
+    const x = cell * 2.2; let y = cell * 2.4;
+    ctx.textAlign = 'left'; ctx.shadowBlur = cell * .3;
+    let cx = x, cy = y, ch = cell * .9;
+    bootLines.forEach((l, i) => {
+      const size = i === 0 ? cell * .95 : cell * .42;
+      ctx.font = `600 ${size}px ${FONT}`;
+      const n = Math.max(0, Math.min(l.length, Math.floor(chars)));
+      chars -= l.length + 8;                     // breve pausa fra una riga e l'altra
+      const shown = l.slice(0, n);
+      if (n > 0) ctx.fillText(shown, x, y);
+      if (n > 0 || i === 0) { cx = x + ctx.measureText(shown).width + size * .15; cy = y; ch = size; }
+      if (chars > -8 && n === l.length) { cx = x; cy = y + (i === 0 ? cell * 1.1 : cell * .7); ch = cell * .42; }
+      y += i === 0 ? cell * 1.1 : cell * .7;
+    });
+    if ((boot * 2.5) % 1 < .6) ctx.fillRect(cx, cy - ch * .45, ch * .55, ch * .9);   // cursore
+    ctx.shadowBlur = 0;
+  }
+
+  function drawWork(dt, ox, oy) {
+    ctx.textAlign = 'center';
+    ctx.font = `500 ${cell * .42}px ${FONT}`;
     ctx.save();
     ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
     const sig = cell * 2.3, inv = 1 / (2 * sig * sig);
@@ -147,8 +316,8 @@
       if (done > 0) f = 0;
       f = Math.min(1.2, f);
       const w = T * q.sp + q.ph, amp = cell * (.035 + .2 * f);
-      let x = bx + Math.sin(w * 1.7) * amp, y = by + Math.cos(w * 2.3) * amp, s = 1 + 1.25 * f;
-      let alpha = q.a * (.55 + .45 * Math.min(1, f * 2));
+      const x = bx + Math.sin(w * 1.7) * amp, y = by + Math.cos(w * 2.3) * amp;
+      let s = 1 + 1.25 * f, alpha = q.a * (.55 + .45 * Math.min(1, f * 2));
       if (q.st === 1) { s = 2.1 + .25 * Math.sin(T * 14 + q.ph); alpha = 1; }
       ctx.globalAlpha = done > 0 ? alpha * .35 : alpha;
       ctx.setTransform(dpr * s, 0, 0, dpr * s, x * dpr, y * dpr);
@@ -172,11 +341,11 @@
 
     // intestazione
     const total = bins.reduce((s, b) => s + b.shown, 0) / BINS;
-    const m = cell * .7, hh = cell * 1.05, hy = cell * .5;
-    ctx.strokeStyle = INK; ctx.lineWidth = Math.max(1.5, cell * .045);
-    ctx.shadowColor = 'rgba(120,220,255,.7)'; ctx.shadowBlur = cell * .25;
+    const m = cell * 1.6, hh = cell * 1.05, hy = cell * .95;
+    ctx.lineWidth = Math.max(1.5, cell * .045);
+    ctx.shadowBlur = cell * .25;
     ctx.strokeRect(m, hy, W - m * 2, hh);
-    ctx.globalAlpha = .16; ctx.fillRect(m, hy, (W - m * 2) * total, hh); ctx.globalAlpha = 1;
+    ctx.globalAlpha = .1; ctx.fillRect(m, hy, (W - m * 2) * total, hh); ctx.globalAlpha = 1;
     ctx.font = `600 ${cell * .5}px ${FONT}`;
     ctx.textAlign = 'left'; ctx.fillText(fileName, m + cell * .5, hy + hh / 2 + 1);
     ctx.textAlign = 'right'; ctx.fillText(Math.round(total * 100) + '% completato', W - m - cell * .5, hy + hh / 2 + 1);
@@ -187,49 +356,40 @@
 
     // contenitori
     const bw = binW(), bh = cell * .72, by0 = binY();
-    ctx.font = `600 ${cell * .36}px ${FONT}`;
+    ctx.font = `600 ${cell * .44}px ${FONT}`;
     bins.forEach((b, i) => {
       const x = binX(i) - bw / 2;
       ctx.lineWidth = Math.max(1.2, cell * .035);
-      // sportelli
-      const a = b.open * 1.9;
+      const a = b.open * 1.9;                    // sportelli
       ctx.beginPath();
       ctx.moveTo(x, by0); ctx.lineTo(x + Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
       ctx.moveTo(x + bw, by0); ctx.lineTo(x + bw - Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
       ctx.stroke();
       ctx.strokeRect(x, by0, bw, bh);
-      ctx.textAlign = 'center'; ctx.fillStyle = INK;
+      ctx.textAlign = 'center';
       ctx.fillText(String(i + 1).padStart(2, '0'), x + bw / 2, by0 + bh / 2 + 1);
       const py = by0 + bh + cell * .22, ph = cell * .5;
       ctx.strokeRect(x, py, bw, ph);
-      ctx.globalAlpha = .3; ctx.fillRect(x, py, bw * b.shown, ph); ctx.globalAlpha = 1;
+      ctx.globalAlpha = .18; ctx.fillRect(x, py, bw * b.shown, ph); ctx.globalAlpha = 1;
       ctx.textAlign = 'left';
       ctx.fillText(Math.round(b.shown * 100) + '%', x + cell * .2, py + ph / 2 + 1);
     });
 
     // piè di pagina
-    ctx.font = `500 ${cell * .28}px ${FONT}`; ctx.fillStyle = DIM;
+    ctx.font = `500 ${cell * .32}px ${FONT}`; ctx.fillStyle = DIM;
     const hex = v => '0x' + (Math.floor(v) & 0xffffff).toString(16).toUpperCase().padStart(6, '0');
     ctx.textAlign = 'center';
-    ctx.fillText(hex(T * 911 + ox * 97) + ' : ' + hex(T * 577 + oy * 131), W / 2, H - cell * .32);
+    ctx.fillText(hex(T * 911 + ox * 97) + ' : ' + hex(T * 577 + oy * 131), W / 2, H - cell * .6);
+    ctx.fillStyle = INK;
 
     if (done > 0) {
-      ctx.fillStyle = INK; ctx.textAlign = 'center';
-      ctx.shadowColor = 'rgba(120,220,255,.8)'; ctx.shadowBlur = cell * .4;
+      ctx.textAlign = 'center'; ctx.shadowBlur = cell * .4;
       ctx.font = `600 ${cell * 1.1}px ${FONT}`;
       ctx.fillText('100%', W / 2, (top + bottom) / 2 - cell * .6);
       ctx.font = `500 ${cell * .42}px ${FONT}`;
       ctx.fillText('File affinato. Grazie per il tuo lavoro.', W / 2, (top + bottom) / 2 + cell * .5);
       ctx.shadowBlur = 0;
     }
-    if (hint > 0) {
-      hint -= dt / SLOW;
-      ctx.globalAlpha = Math.min(1, hint) * .7; ctx.fillStyle = INK; ctx.textAlign = 'right';
-      ctx.font = `500 ${cell * .28}px ${FONT}`;
-      ctx.fillText('clic o F: schermo intero', W - cell * .7, H - cell * .32);
-      ctx.globalAlpha = 1;
-    }
-    requestAnimationFrame(frame);
   }
 
   // --- interazione ---
@@ -244,9 +404,8 @@
   addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') fs(); });
   addEventListener('resize', resize);
 
-  newFile(); resize();
-  // parte con un po' di lavoro già fatto, come un file ripreso a metà
-  bins.forEach(b => { b.p = b.shown = rnd(.05, .55); });
+  resize();
+  newFile(true);   // il primo file parte già a metà, come un lavoro ripreso
   requestAnimationFrame(frame);
 })();
 </script>
