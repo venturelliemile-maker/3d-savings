@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Terminale di affinamento</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #030914; overflow: hidden; }
+  body.idle { cursor: none; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  /* Effetto tubo catodico: righe di scansione, vignettatura, leggero sfarfallio */
+  .crt { position: fixed; inset: 0; pointer-events: none; }
+  .scan {
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0, rgba(0,0,0,0) 2px, rgba(0,0,0,.22) 3px, rgba(0,0,0,0) 4px);
+    mix-blend-mode: multiply;
+  }
+  .vignette {
+    background: radial-gradient(ellipse at center, rgba(0,0,0,0) 55%, rgba(0,0,0,.55) 100%);
+    animation: flicker 7s infinite steps(1);
+  }
+  @keyframes flicker { 0%, 100% { opacity: 1; } 47% { opacity: .93; } 48% { opacity: 1; } 81% { opacity: .96; } 82% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .vignette { animation: none; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="crt scan"></div>
+<div class="crt vignette"></div>
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const INK = '#b8ecff', DIM = 'rgba(184,236,255,.55)', BG = '#050d1a';
+  const FONT = '"IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace';
+  const SLOW = matchMedia('(prefers-reduced-motion: reduce)').matches ? 0.35 : 1;
+  const NAMES = ['Tessera', 'Vetrata', 'Cardine', 'Brughiera', 'Lanterna', 'Meridiana', 'Scogliera', 'Ardesia', 'Ginepro', 'Falesia'];
+  const BINS = 5;
+
+  let W = 0, H = 0, dpr = 1, cell = 40, cols = 0, rows = 0, top = 0, bottom = 0;
+  let cells = [], bins = [], fileName = '', done = 0;
+  const rnd = (a, b) => a + Math.random() * (b - a);
+  const digit = () => (Math.random() * 10) | 0;
+
+  function newFile() {
+    fileName = NAMES[(Math.random() * NAMES.length) | 0] + '-' + String((Math.random() * 90 + 10) | 0);
+    bins = Array.from({ length: BINS }, () => ({ p: 0, shown: 0, open: 0 }));
+    done = 0;
+  }
+
+  function resize() {
+    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    cell = Math.max(26, Math.min(52, Math.min(W, H) / 17));
+    top = cell * 2.1; bottom = H - cell * 3.1;
+    cols = Math.ceil(W / cell) + 4; rows = Math.ceil((bottom - top) / cell) + 4;
+    cells = [];
+    for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++)
+      cells.push({ c, r, d: digit(), ph: rnd(0, 6.28), sp: rnd(.5, 1.4), a: 1, st: 0, t: 0, delay: 0, sx: 0, sy: 0, ss: 1 });
+  }
+
+  // Punti di "attenzione" che vagano: le cifre vicine si ingrossano e tremano.
+  const blobs = [0, 1, 2].map(i => ({ k: rnd(0, 100), x: 0, y: 0, hold: 0, i }));
+  const mouse = { x: -999, y: -999, w: 0 };
+  function moveBlob(b, t) {
+    if (b.hold > 0) return;
+    const k = b.k;
+    b.x = W * (.5 + .42 * Math.sin(t * .11 + k) * Math.cos(t * .047 + k * 2));
+    b.y = top + (bottom - top) * (.5 + .4 * Math.sin(t * .083 + k * 3) * Math.cos(t * .031 + k));
+  }
+
+  // Ciclo di affinamento: selezione -> volo nel contenitore -> ricarica.
+  let phase = 'idle', timer = 5, target = 0, flying = 0;
+  const binX = i => W * (i + .5) / BINS;
+  const binW = () => Math.min(W / BINS * .62, cell * 5.2);
+  const binY = () => bottom + cell * .7;
+
+  function startEvent(ox, oy) {
+    const b = blobs[0], R = cell * rnd(1.7, 2.6);
+    let n = 0;
+    for (const q of cells) {
+      if (q.st) continue;
+      const x = q.c * cell - cell * 2 + ox, y = top + q.r * cell - cell * 2 + oy;
+      if (y < top + cell || y > bottom - cell) continue;
+      if (Math.hypot(x - b.x, y - b.y) < R) { q.st = 1; q.t = 0; q.delay = rnd(0, .45); n++; }
+    }
+    if (!n) { timer = 2; return; }
+    const open = bins.map((v, i) => i).filter(i => bins[i].p < 1);
+    target = open[(Math.random() * open.length) | 0];
+    b.hold = 1; phase = 'gather'; timer = 1.5; flying = n;
+  }
+
+  let last = performance.now(), T = 0, hint = 6;
+  function frame(now) {
+    const dt = Math.min(.05, (now - last) / 1000) * SLOW; last = now; T += dt;
+    const ox = Math.sin(T * .05) * cell * .9, oy = Math.cos(T * .037) * cell * .9;
+    blobs.forEach(b => moveBlob(b, T));
+    mouse.w = Math.max(0, mouse.w - dt * .5);
+
+    // --- logica ---
+    if (done > 0) {
+      done -= dt;
+      if (done <= 0) newFile();
+    } else if (phase === 'idle') {
+      timer -= dt;
+      if (timer <= 0) startEvent(ox, oy);
+    } else if (phase === 'gather') {
+      timer -= dt;
+      bins[target].open = Math.min(1, bins[target].open + dt * 2);
+      if (timer <= 0) {
+        phase = 'fly';
+        for (const q of cells) if (q.st === 1) {
+          q.st = 2; q.t = 0;
+          q.sx = q.c * cell - cell * 2 + ox; q.sy = top + q.r * cell - cell * 2 + oy;
+        }
+      }
+    } else if (phase === 'fly' && flying <= 0) {
+      const bin = bins[target];
+      bin.p = Math.min(1, bin.p + rnd(.05, .11));
+      blobs[0].hold = 0; blobs[0].k = rnd(0, 100);
+      phase = 'idle'; timer = rnd(4, 8);
+      if (bins.every(x => x.p >= 1)) done = 8;
+    }
+    bins.forEach((b, i) => {
+      if (!(i === target && phase !== 'idle')) b.open = Math.max(0, b.open - dt * 1.5);
+      b.shown += (b.p - b.shown) * Math.min(1, dt * 3);
+    });
+
+    // --- disegno ---
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = BG; ctx.fillRect(0, 0, W, H);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `500 ${cell * .42}px ${FONT}`;
+    ctx.fillStyle = INK;
+
+    ctx.save();
+    ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
+    const sig = cell * 2.3, inv = 1 / (2 * sig * sig);
+    const fliers = [];
+    for (const q of cells) {
+      if (q.st === 2) { fliers.push(q); continue; }
+      if (q.a < 1) q.a = Math.min(1, q.a + dt * .8);
+      const bx = q.c * cell - cell * 2 + ox, by = top + q.r * cell - cell * 2 + oy;
+      let f = 0;
+      for (const b of blobs) { const dx = bx - b.x, dy = by - b.y; f += Math.exp(-(dx * dx + dy * dy) * inv); }
+      if (mouse.w > 0) { const dx = bx - mouse.x, dy = by - mouse.y; f += mouse.w * Math.exp(-(dx * dx + dy * dy) * inv); }
+      if (done > 0) f = 0;
+      f = Math.min(1.2, f);
+      const w = T * q.sp + q.ph, amp = cell * (.035 + .2 * f);
+      let x = bx + Math.sin(w * 1.7) * amp, y = by + Math.cos(w * 2.3) * amp, s = 1 + 1.25 * f;
+      let alpha = q.a * (.55 + .45 * Math.min(1, f * 2));
+      if (q.st === 1) { s = 2.1 + .25 * Math.sin(T * 14 + q.ph); alpha = 1; }
+      ctx.globalAlpha = done > 0 ? alpha * .35 : alpha;
+      ctx.setTransform(dpr * s, 0, 0, dpr * s, x * dpr, y * dpr);
+      ctx.fillText(q.d, 0, 0);
+    }
+    ctx.restore();
+
+    // cifre in volo verso il contenitore
+    ctx.globalAlpha = 1;
+    const tx = binX(target), ty = binY();
+    for (const q of fliers) {
+      q.t += dt;
+      const u = Math.max(0, Math.min(1, (q.t - q.delay) / .85)), e = u * u * u;
+      const x = q.sx + (tx - q.sx) * e, y = q.sy + (ty - q.sy) * (u * u) - Math.sin(u * Math.PI) * cell * .8;
+      const s = 2.1 * (1 - e * .75);
+      ctx.setTransform(dpr * s, 0, 0, dpr * s, x * dpr, y * dpr);
+      ctx.fillText(q.d, 0, 0);
+      if (u >= 1) { q.st = 0; q.d = digit(); q.a = 0; flying--; }
+    }
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    // intestazione
+    const total = bins.reduce((s, b) => s + b.shown, 0) / BINS;
+    const m = cell * .7, hh = cell * 1.05, hy = cell * .5;
+    ctx.strokeStyle = INK; ctx.lineWidth = Math.max(1.5, cell * .045);
+    ctx.shadowColor = 'rgba(120,220,255,.7)'; ctx.shadowBlur = cell * .25;
+    ctx.strokeRect(m, hy, W - m * 2, hh);
+    ctx.globalAlpha = .16; ctx.fillRect(m, hy, (W - m * 2) * total, hh); ctx.globalAlpha = 1;
+    ctx.font = `600 ${cell * .5}px ${FONT}`;
+    ctx.textAlign = 'left'; ctx.fillText(fileName, m + cell * .5, hy + hh / 2 + 1);
+    ctx.textAlign = 'right'; ctx.fillText(Math.round(total * 100) + '% completato', W - m - cell * .5, hy + hh / 2 + 1);
+    ctx.shadowBlur = 0;
+    ctx.beginPath();
+    ctx.moveTo(0, top); ctx.lineTo(W, top); ctx.moveTo(0, bottom); ctx.lineTo(W, bottom);
+    ctx.lineWidth = 1; ctx.stroke();
+
+    // contenitori
+    const bw = binW(), bh = cell * .72, by0 = binY();
+    ctx.font = `600 ${cell * .36}px ${FONT}`;
+    bins.forEach((b, i) => {
+      const x = binX(i) - bw / 2;
+      ctx.lineWidth = Math.max(1.2, cell * .035);
+      // sportelli
+      const a = b.open * 1.9;
+      ctx.beginPath();
+      ctx.moveTo(x, by0); ctx.lineTo(x + Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
+      ctx.moveTo(x + bw, by0); ctx.lineTo(x + bw - Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
+      ctx.stroke();
+      ctx.strokeRect(x, by0, bw, bh);
+      ctx.textAlign = 'center'; ctx.fillStyle = INK;
+      ctx.fillText(String(i + 1).padStart(2, '0'), x + bw / 2, by0 + bh / 2 + 1);
+      const py = by0 + bh + cell * .22, ph = cell * .5;
+      ctx.strokeRect(x, py, bw, ph);
+      ctx.globalAlpha = .3; ctx.fillRect(x, py, bw * b.shown, ph); ctx.globalAlpha = 1;
+      ctx.textAlign = 'left';
+      ctx.fillText(Math.round(b.shown * 100) + '%', x + cell * .2, py + ph / 2 + 1);
+    });
+
+    // piè di pagina
+    ctx.font = `500 ${cell * .28}px ${FONT}`; ctx.fillStyle = DIM;
+    const hex = v => '0x' + (Math.floor(v) & 0xffffff).toString(16).toUpperCase().padStart(6, '0');
+    ctx.textAlign = 'center';
+    ctx.fillText(hex(T * 911 + ox * 97) + ' : ' + hex(T * 577 + oy * 131), W / 2, H - cell * .32);
+
+    if (done > 0) {
+      ctx.fillStyle = INK; ctx.textAlign = 'center';
+      ctx.shadowColor = 'rgba(120,220,255,.8)'; ctx.shadowBlur = cell * .4;
+      ctx.font = `600 ${cell * 1.1}px ${FONT}`;
+      ctx.fillText('100%', W / 2, (top + bottom) / 2 - cell * .6);
+      ctx.font = `500 ${cell * .42}px ${FONT}`;
+      ctx.fillText('File affinato. Grazie per il tuo lavoro.', W / 2, (top + bottom) / 2 + cell * .5);
+      ctx.shadowBlur = 0;
+    }
+    if (hint > 0) {
+      hint -= dt / SLOW;
+      ctx.globalAlpha = Math.min(1, hint) * .7; ctx.fillStyle = INK; ctx.textAlign = 'right';
+      ctx.font = `500 ${cell * .28}px ${FONT}`;
+      ctx.fillText('clic o F: schermo intero', W - cell * .7, H - cell * .32);
+      ctx.globalAlpha = 1;
+    }
+    requestAnimationFrame(frame);
+  }
+
+  // --- interazione ---
+  let idleT;
+  addEventListener('mousemove', e => {
+    mouse.x = e.clientX; mouse.y = e.clientY; mouse.w = 1;
+    document.body.classList.remove('idle');
+    clearTimeout(idleT); idleT = setTimeout(() => document.body.classList.add('idle'), 2500);
+  });
+  const fs = () => document.fullscreenElement ? document.exitFullscreen() : document.documentElement.requestFullscreen?.().catch(() => {});
+  addEventListener('click', fs);
+  addEventListener('keydown', e => { if (e.key === 'f' || e.key === 'F') fs(); });
+  addEventListener('resize', resize);
+
+  newFile(); resize();
+  // parte con un po' di lavoro già fatto, come un file ripreso a metà
+  bins.forEach(b => { b.p = b.shown = rnd(.05, .55); });
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
