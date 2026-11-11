@@ -7,7 +7,7 @@
 <style>
   html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
   body.idle { cursor: none; }
-  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+  canvas { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; image-rendering: pixelated; }
   /* Ripiego senza WebGL: righe di scansione e vignettatura in CSS */
   .crt { position: fixed; inset: 0; pointer-events: none; display: none; }
   body.nogl .crt { display: block; }
@@ -26,7 +26,7 @@
 (() => {
   // Colore del fosforo: aggiungi ?colore=verde oppure ?colore=ambra all'indirizzo.
   const PAL = {
-    blu:   { ink: '#b8ecff', dim: 'rgba(184,236,255,.55)', glow: 'rgba(120,220,255,.7)', bg: '5,13,26',  tint: [.35, .8, 1] },
+    blu:   { ink: '#d8f6ff', dim: 'rgba(216,246,255,.6)',  glow: 'rgba(140,225,255,.7)', bg: '7,20,62',  tint: [.3, .6, 1] },
     verde: { ink: '#b6ffd0', dim: 'rgba(182,255,208,.55)', glow: 'rgba(90,255,150,.7)',  bg: '3,18,10',  tint: [.3, 1, .5] },
     ambra: { ink: '#ffd9a0', dim: 'rgba(255,217,160,.55)', glow: 'rgba(255,170,60,.7)',  bg: '20,11,3',  tint: [1, .65, .2] },
   };
@@ -53,15 +53,17 @@
   const VS = 'attribute vec2 p; varying vec2 v; void main(){ v = p * .5 + .5; gl_Position = vec4(p, 0., 1.); }';
   const FS = `
     precision mediump float;
-    uniform sampler2D uTex; uniform vec2 uRes; uniform float uTime, uOn, uFx; uniform vec3 uTint;
+    uniform sampler2D uTex; uniform vec2 uRes, uTexRes; uniform float uTime, uOn, uFx; uniform vec3 uTint;
     varying vec2 v;
     float hash(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
     vec3 tx(vec2 uv){
       if (uv.x < 0. || uv.y < 0. || uv.x > 1. || uv.y > 1.) return vec3(0.);
-      return texture2D(uTex, uv).rgb;
+      vec2 tp = uv * uTexRes - .5, i = floor(tp);
+      vec2 f = smoothstep(.25, .75, tp - i);        // pixel grossi dai bordi netti
+      return texture2D(uTex, (i + .5 + f) / uTexRes).rgb;
     }
     void main(){
-      const float K = .09;
+      const float K = .045;
       vec2 c = v * 2. - 1.;
       float r2 = dot(c, c);
       c *= (1. + K * r2) / (1. + K);               // curvatura del vetro
@@ -74,10 +76,10 @@
       float t = mod(uTime, 500.);
       // tremolio orizzontale riga per riga e, ogni tanto, uno strappo
       float line = floor(uv.y * uRes.y / 3.);
-      uv.x += (hash(vec2(line, floor(t * 30.))) - .5) * .0011 * uFx;
+      uv.x += (hash(vec2(line, floor(t * 30.))) - .5) * .0006 * uFx;
       float gt = floor(t * 2.5);
-      float tear = step(.93, hash(vec2(gt, 3.))) * step(abs(uv.y - hash(vec2(gt, 9.))), .035);
-      uv.x += tear * .012 * sin(t * 90.) * uFx;
+      float tear = step(.97, hash(vec2(gt, 3.))) * step(abs(uv.y - hash(vec2(gt, 9.))), .035);
+      uv.x += tear * .006 * sin(t * 90.) * uFx;
 
       // aberrazione cromatica verso i bordi
       float off = .0005 * (1. + 2. * r2);
@@ -90,10 +92,10 @@
         vec2 d = vec2(cos(a), sin(a)) * px;
         bloom += tx(uv + d * 2.5) + tx(uv + d * 6.);
       }
-      col += bloom * .032;
+      col += bloom * .022;
 
       // righe di scansione
-      col *= .8 + .2 * sin(uv.y * uRes.y * 2.0944);
+      col *= .84 + .16 * sin(uv.y * uTexRes.y * 6.2832);
       // banda luminosa che scorre lungo lo schermo
       float band = exp(-pow((fract(uv.y + t * .1) - .5) * 8., 2.));
       col += col * band * .35 + uTint * band * .02;
@@ -105,8 +107,8 @@
 
       // vignettatura e angoli arrotondati
       col *= 1. - .5 * pow(r2 * .5, 1.6);
-      vec2 q = abs(cm) - vec2(.9);
-      float m = length(max(q, 0.)) - .1;
+      vec2 q = abs(cm) - vec2(.94);
+      float m = length(max(q, 0.)) - .06;
       float mask = smoothstep(0., -.025, m);
       // riflesso del vetro
       col += .035 * smoothstep(1.1, 0., length(cm - vec2(-.55, .6)));
@@ -132,7 +134,7 @@
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    for (const n of ['uRes', 'uTime', 'uOn', 'uFx', 'uTint']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['uRes', 'uTexRes', 'uTime', 'uOn', 'uFx', 'uTint']) U[n] = gl.getUniformLocation(prog, n);
     gl.uniform3fv(U.uTint, P.tint);
     gl.uniform1f(U.uFx, REDUCED ? 0 : 1);
     return true;
@@ -174,9 +176,13 @@
   }
 
   function resize() {
-    dpr = Math.min(window.devicePixelRatio || 1, 2);
+    const real = Math.min(window.devicePixelRatio || 1, 2);
     W = innerWidth; H = innerHeight;
-    cv.width = view.width = Math.round(W * dpr); cv.height = view.height = Math.round(H * dpr);
+    // il contenuto è disegnato a bassa risoluzione (circa 400 righe) e poi ingrandito:
+    // `dpr` qui è il rapporto fra pixel della tela e pixel CSS
+    dpr = Math.min(real, 400 / Math.min(W, H));
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
+    view.width = Math.round(W * real); view.height = Math.round(H * real);
     if (hasGL) gl.viewport(0, 0, view.width, view.height);
     cell = Math.max(26, Math.min(52, Math.min(W, H) / 17));
     top = cell * 2.5; bottom = H - cell * 3.4;
@@ -200,7 +206,7 @@
   // Ciclo di affinamento: selezione -> volo nel contenitore -> ricarica.
   let phase = 'idle', timer = 5, target = 0, flying = 0;
   const binX = i => W * (.08 + .84 * (i + .5) / BINS);
-  const binW = () => Math.min(W * .84 / BINS * .84, cell * 5.6);
+  const binW = () => Math.min(W * .84 / BINS * .86, cell * 6);
   const binY = () => bottom + cell * .7;
 
   function startEvent(ox, oy) {
@@ -297,6 +303,7 @@
     if (hasGL) {
       gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, cv);
       gl.uniform2f(U.uRes, W, H);
+      gl.uniform2f(U.uTexRes, cv.width, cv.height);
       gl.uniform1f(U.uTime, now / 1000);
       gl.uniform1f(U.uOn, power);
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
@@ -307,7 +314,7 @@
   function drawBoot() {
     let chars = Math.max(0, boot * BOOT_CPS);
     const x = cell * 2.2; let y = cell * 2.4;
-    ctx.textAlign = 'left'; ctx.shadowBlur = cell * .3;
+    ctx.textAlign = 'left'; ctx.shadowBlur = cell * .3 * dpr;
     let cx = x, cy = y, ch = cell * .9;
     bootLines.forEach((l, i) => {
       const size = i === 0 ? cell * .95 : cell * .42;
@@ -326,7 +333,7 @@
 
   function drawWork(dt, ox, oy) {
     ctx.textAlign = 'center';
-    ctx.font = `500 ${cell * .42}px ${FONT}`;
+    ctx.font = `700 ${cell * .44}px ${FONT}`;
     ctx.save();
     ctx.beginPath(); ctx.rect(0, top, W, bottom - top); ctx.clip();
     const sig = cell * 2.3, inv = 1 / (2 * sig * sig);
@@ -342,7 +349,7 @@
       f = Math.min(1.2, f);
       const w = T * q.sp + q.ph, amp = cell * (.035 + .2 * f);
       const x = bx + Math.sin(w * 1.7) * amp, y = by + Math.cos(w * 2.3) * amp;
-      let s = 1 + 1.25 * f, alpha = q.a * (.55 + .45 * Math.min(1, f * 2));
+      let s = 1 + 1.25 * f, alpha = q.a * (.78 + .22 * Math.min(1, f * 2));
       if (q.st === 1) { s = 2.1 + .25 * Math.sin(T * 14 + q.ph); alpha = 1; }
       ctx.globalAlpha = done > 0 ? alpha * .35 : alpha;
       ctx.setTransform(dpr * s, 0, 0, dpr * s, x * dpr, y * dpr);
@@ -368,7 +375,7 @@
     const total = bins.reduce((s, b) => s + b.shown, 0) / BINS;
     const m = cell * 1.6, hh = cell * 1.05, hy = cell * .95;
     ctx.lineWidth = Math.max(1.5, cell * .045);
-    ctx.shadowBlur = cell * .25;
+    ctx.shadowBlur = cell * .25 * dpr;
     ctx.strokeRect(m, hy, W - m * 2, hh);
     ctx.globalAlpha = .1; ctx.fillRect(m, hy, (W - m * 2) * total, hh); ctx.globalAlpha = 1;
     ctx.font = `600 ${cell * .5}px ${FONT}`;
@@ -387,12 +394,12 @@
     ctx.lineWidth = lw; ctx.lineJoin = 'miter';
     bins.forEach((b, i) => {
       const x = binX(i) - bw / 2, label = String(i + 1).padStart(2, '0');
-      ctx.font = `700 ${cell * .5}px ${FONT}`;
+      ctx.font = `700 ${cell * .56}px ${FONT}`;
 
       // pannello delle categorie, sale da dentro il contenitore
       if (b.pan > .01) {
-        const pad = cell * .18, lh = cell * .72, row = cell * .76, rh = cell * .5;
-        const phh = pad + lh + cell * .26 + row * 4 + pad * .4, py0 = by0 - phh * b.pan;
+        const pad = cell * .22, lh = cell * .95, row = cell * 1.22, rh = cell * .82;
+        const phh = pad + lh + cell * .34 + row * 4, py0 = by0 - phh * b.pan;
         ctx.save();
         ctx.beginPath(); ctx.rect(x - lw, by0 - phh - lw, bw + lw * 2, phh + lw); ctx.clip();
         ctx.fillStyle = solid; ctx.fillRect(x, py0, bw, phh);
@@ -400,10 +407,10 @@
         ctx.strokeRect(x + pad, py0 + pad, bw - pad * 2, lh);
         ctx.fillStyle = INK; ctx.textAlign = 'center';
         ctx.fillText(label, x + bw / 2, py0 + pad + lh / 2 + 1);
-        const wide = bw > cell * 3.2, lab = wide ? cell * 1.2 : 0;
-        ctx.font = `700 ${cell * .44}px ${FONT}`; ctx.textAlign = 'left';
+        const wide = bw > cell * 3.2, lab = wide ? cell * 1.5 : 0;
+        ctx.font = `700 ${cell * .6}px ${FONT}`; ctx.textAlign = 'left';
         CATS.forEach((name, k) => {
-          const ry = py0 + pad + lh + cell * .26 + k * row;
+          const ry = py0 + pad + lh + cell * .34 + k * row;
           ctx.fillStyle = ctx.strokeStyle = CAT_COL[k];
           if (wide) ctx.fillText(name, x + pad, ry + rh / 2 + 1);
           const bx = x + pad + lab, bwid = bw - pad * 2 - lab;
@@ -412,7 +419,7 @@
         });
         ctx.restore();
         ctx.fillStyle = ctx.strokeStyle = INK;
-        ctx.font = `700 ${cell * .5}px ${FONT}`;
+        ctx.font = `700 ${cell * .56}px ${FONT}`;
       }
 
       // sportelli: due ante incernierate agli angoli che si aprono verso l'esterno
@@ -452,7 +459,7 @@
     ctx.fillStyle = INK;
 
     if (done > 0) {
-      ctx.textAlign = 'center'; ctx.shadowBlur = cell * .4;
+      ctx.textAlign = 'center'; ctx.shadowBlur = cell * .4 * dpr;
       ctx.font = `600 ${cell * 1.1}px ${FONT}`;
       ctx.fillText('100%', W / 2, (top + bottom) / 2 - cell * .6);
       ctx.font = `500 ${cell * .42}px ${FONT}`;
