@@ -37,6 +37,10 @@
   const SLOW = REDUCED ? 0.35 : 1;
   const NAMES = ['Tessera', 'Vetrata', 'Cardine', 'Brughiera', 'Lanterna', 'Meridiana', 'Scogliera', 'Ardesia', 'Ginepro', 'Falesia'];
   const BINS = 5;
+  // Le quattro categorie di ogni contenitore, con il colore della rispettiva barra.
+  const CATS = ['WO', 'FC', 'DR', 'MA'];
+  const CAT_COL = ['#8fe8b4', '#f6eba0', '#f3e4ee', '#62b4f0'];
+  const mean = a => a.reduce((s, v) => s + v, 0) / a.length;
 
   // Il contenuto viene disegnato su una tela nascosta; lo shader WebGL la mostra
   // attraverso il "vetro" del tubo catodico (curvatura, righe, bagliore, disturbi).
@@ -160,7 +164,10 @@
 
   function newFile(progress) {
     fileName = NAMES[(Math.random() * NAMES.length) | 0] + '-' + String((Math.random() * 90 + 10) | 0);
-    bins = Array.from({ length: BINS }, () => { const p = progress ? rnd(.05, .55) : 0; return { p, shown: 0, open: 0 }; });
+    bins = Array.from({ length: BINS }, () => {
+      const cat = CATS.map(() => progress ? rnd(.05, .6) : 0);
+      return { cat, sc: [0, 0, 0, 0], p: mean(cat), shown: 0, open: 0, pan: 0 };
+    });
     done = 0; phase = 'idle'; timer = 4;
     for (const q of cells) { q.st = 0; q.a = 0; q.d = digit(); }
     startBoot();
@@ -193,7 +200,7 @@
   // Ciclo di affinamento: selezione -> volo nel contenitore -> ricarica.
   let phase = 'idle', timer = 5, target = 0, flying = 0;
   const binX = i => W * (.08 + .84 * (i + .5) / BINS);
-  const binW = () => Math.min(W * .84 / BINS * .62, cell * 5.2);
+  const binW = () => Math.min(W * .84 / BINS * .84, cell * 5.6);
   const binY = () => bottom + cell * .7;
 
   function startEvent(ox, oy) {
@@ -241,15 +248,33 @@
         }
       }
     } else if (phase === 'fly' && flying <= 0) {
+      // le cifre sono dentro: il pannello del contenitore sale e mostra le categorie
       const bin = bins[target];
-      bin.p = Math.min(1, bin.p + rnd(.05, .11));
-      blobs[0].hold = 0; blobs[0].k = rnd(0, 100);
-      phase = 'idle'; timer = rnd(4, 8);
-      if (bins.every(x => x.p >= 1)) done = 8;
+      let add = rnd(.2, .44);
+      const free = [0, 1, 2, 3].filter(k => bin.cat[k] < 1).sort(() => Math.random() - .5);
+      free.forEach((k, n) => {
+        const part = n === free.length - 1 ? add : add * rnd(.2, .7);
+        bin.cat[k] = Math.min(1, bin.cat[k] + part); add -= part;
+      });
+      bin.p = mean(bin.cat);
+      phase = 'panel'; timer = 3.6;
+    } else if (phase === 'panel') {
+      timer -= dt;
+      if (timer <= 0) {
+        blobs[0].hold = 0; blobs[0].k = rnd(0, 100);
+        phase = 'idle'; timer = rnd(3, 7);
+        if (bins.every(x => x.p >= 1)) done = 8;
+      }
     }
     bins.forEach((b, i) => {
       if (!(i === target && phase !== 'idle')) b.open = Math.max(0, b.open - dt * 1.5);
-      if (!booting) b.shown += (b.p - b.shown) * Math.min(1, dt * 3);
+      const up = i === target && phase === 'panel' && timer > .9 ? 1 : 0;
+      b.pan += (up - b.pan) * Math.min(1, dt * 6);
+      if (!booting) {
+        const k = Math.min(1, dt * (b.pan > .5 || phase !== 'panel' ? 3 : 0));
+        b.sc = b.sc.map((v, j) => v + (b.cat[j] - v) * k);
+        b.shown = mean(b.sc);
+      }
     });
 
     // --- disegno ---
@@ -350,29 +375,73 @@
     ctx.textAlign = 'left'; ctx.fillText(fileName, m + cell * .5, hy + hh / 2 + 1);
     ctx.textAlign = 'right'; ctx.fillText(Math.round(total * 100) + '% completato', W - m - cell * .5, hy + hh / 2 + 1);
     ctx.shadowBlur = 0;
+    // doppia riga sopra e sotto la griglia
+    const lw = Math.max(2, cell * .06), gap = cell * .16;
+    ctx.lineWidth = lw * .7;
     ctx.beginPath();
-    ctx.moveTo(0, top); ctx.lineTo(W, top); ctx.moveTo(0, bottom); ctx.lineTo(W, bottom);
-    ctx.lineWidth = 1; ctx.stroke();
+    for (const y of [top - gap, top, bottom, bottom + gap]) { ctx.moveTo(0, y); ctx.lineTo(W, y); }
+    ctx.stroke();
 
     // contenitori
-    const bw = binW(), bh = cell * .72, by0 = binY();
-    ctx.font = `600 ${cell * .44}px ${FONT}`;
+    const bw = binW(), bh = cell * .8, by0 = binY(), solid = `rgb(${P.bg})`;
+    ctx.lineWidth = lw; ctx.lineJoin = 'miter';
     bins.forEach((b, i) => {
-      const x = binX(i) - bw / 2;
-      ctx.lineWidth = Math.max(1.2, cell * .035);
-      const a = b.open * 1.9;                    // sportelli
-      ctx.beginPath();
-      ctx.moveTo(x, by0); ctx.lineTo(x + Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
-      ctx.moveTo(x + bw, by0); ctx.lineTo(x + bw - Math.cos(a) * bw * .3, by0 - Math.sin(a) * bw * .3);
-      ctx.stroke();
+      const x = binX(i) - bw / 2, label = String(i + 1).padStart(2, '0');
+      ctx.font = `700 ${cell * .5}px ${FONT}`;
+
+      // pannello delle categorie, sale da dentro il contenitore
+      if (b.pan > .01) {
+        const pad = cell * .18, lh = cell * .72, row = cell * .76, rh = cell * .5;
+        const phh = pad + lh + cell * .26 + row * 4 + pad * .4, py0 = by0 - phh * b.pan;
+        ctx.save();
+        ctx.beginPath(); ctx.rect(x - lw, by0 - phh - lw, bw + lw * 2, phh + lw); ctx.clip();
+        ctx.fillStyle = solid; ctx.fillRect(x, py0, bw, phh);
+        ctx.strokeRect(x, py0, bw, phh);
+        ctx.strokeRect(x + pad, py0 + pad, bw - pad * 2, lh);
+        ctx.fillStyle = INK; ctx.textAlign = 'center';
+        ctx.fillText(label, x + bw / 2, py0 + pad + lh / 2 + 1);
+        const wide = bw > cell * 3.2, lab = wide ? cell * 1.2 : 0;
+        ctx.font = `700 ${cell * .44}px ${FONT}`; ctx.textAlign = 'left';
+        CATS.forEach((name, k) => {
+          const ry = py0 + pad + lh + cell * .26 + k * row;
+          ctx.fillStyle = ctx.strokeStyle = CAT_COL[k];
+          if (wide) ctx.fillText(name, x + pad, ry + rh / 2 + 1);
+          const bx = x + pad + lab, bwid = bw - pad * 2 - lab;
+          ctx.strokeRect(bx, ry, bwid, rh);
+          ctx.fillRect(bx, ry, bwid * b.sc[k], rh);
+        });
+        ctx.restore();
+        ctx.fillStyle = ctx.strokeStyle = INK;
+        ctx.font = `700 ${cell * .5}px ${FONT}`;
+      }
+
+      // sportelli: due ante incernierate agli angoli che si aprono verso l'esterno
+      const a = b.open * 2.3, fl = bw / 2, th = cell * .17;
+      for (const side of [1, -1]) {
+        ctx.save();
+        ctx.translate(side > 0 ? x : x + bw, by0); ctx.scale(side, 1); ctx.rotate(-a);
+        ctx.fillStyle = solid; ctx.fillRect(0, -th, fl, th);
+        ctx.strokeRect(0, -th, fl, th);
+        ctx.restore();
+      }
+      ctx.fillStyle = INK;
+
+      // etichetta e barra di avanzamento
+      ctx.fillStyle = solid; ctx.fillRect(x, by0, bw, bh); ctx.fillStyle = INK;
       ctx.strokeRect(x, by0, bw, bh);
       ctx.textAlign = 'center';
-      ctx.fillText(String(i + 1).padStart(2, '0'), x + bw / 2, by0 + bh / 2 + 1);
-      const py = by0 + bh + cell * .22, ph = cell * .5;
+      ctx.fillText(label, x + bw / 2, by0 + bh / 2 + 1);
+      const py = by0 + bh + cell * .2, ph = cell * .62, fw = bw * b.shown;
+      const pct = Math.round(b.shown * 100) + '%';
+      ctx.font = `700 ${cell * .42}px ${FONT}`; ctx.textAlign = 'left';
       ctx.strokeRect(x, py, bw, ph);
-      ctx.globalAlpha = .18; ctx.fillRect(x, py, bw * b.shown, ph); ctx.globalAlpha = 1;
-      ctx.textAlign = 'left';
-      ctx.fillText(Math.round(b.shown * 100) + '%', x + cell * .2, py + ph / 2 + 1);
+      ctx.fillText(pct, x + cell * .22, py + ph / 2 + 1);
+      ctx.save();                                // testo scuro sopra la parte piena
+      ctx.beginPath(); ctx.rect(x, py, fw, ph); ctx.clip();
+      ctx.globalAlpha = .9; ctx.fillRect(x, py, fw, ph); ctx.globalAlpha = 1;
+      ctx.fillStyle = solid; ctx.fillText(pct, x + cell * .22, py + ph / 2 + 1);
+      ctx.restore();
+      ctx.fillStyle = INK;
     });
 
     // piè di pagina
