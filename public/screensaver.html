@@ -331,6 +331,32 @@
     ctx.shadowBlur = 0;
   }
 
+  // Logo: globo ellittico con paralleli e meridiani, e il nome nella fascia centrale.
+  function drawLogo(x, y, rx, ry) {
+    const solid = `rgb(${P.bg})`, lw = Math.max(1.6, cell * .05);
+    ctx.save();
+    ctx.translate(x, y); ctx.lineWidth = lw;
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.2832);
+    ctx.fillStyle = solid; ctx.fill();
+    ctx.save(); ctx.clip();
+    ctx.beginPath();
+    for (const k of [.36, .7]) ctx.ellipse(0, 0, rx * k, ry, 0, 0, 6.2832);   // meridiani
+    ctx.stroke();
+    ctx.fillRect(-rx, -ry * .4, rx * 2, ry * .8);                              // fascia del nome
+    ctx.beginPath();
+    for (const s of [-1, 1]) { ctx.moveTo(-rx, s * ry * .58); ctx.lineTo(rx, s * ry * .58); }  // paralleli
+    ctx.stroke();
+    ctx.restore();
+    ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, 6.2832); ctx.stroke();
+    ctx.fillStyle = INK; ctx.textAlign = 'center';
+    ctx.font = `800 ${ry * .58}px "Helvetica Neue", Arial, sans-serif`;
+    const name = 'LUMON', tw = ctx.measureText(name).width;
+    ctx.scale(Math.min(1.5, rx * 1.5 / tw), 1);
+    ctx.fillText(name, 0, ry * .03);
+    ctx.restore();
+    ctx.fillStyle = ctx.strokeStyle = INK;
+  }
+
   function drawWork(dt, ox, oy) {
     ctx.textAlign = 'center';
     ctx.font = `700 ${cell * .44}px ${FONT}`;
@@ -380,8 +406,10 @@
     ctx.globalAlpha = .1; ctx.fillRect(m, hy, (W - m * 2) * total, hh); ctx.globalAlpha = 1;
     ctx.font = `600 ${cell * .5}px ${FONT}`;
     ctx.textAlign = 'left'; ctx.fillText(fileName, m + cell * .5, hy + hh / 2 + 1);
-    ctx.textAlign = 'right'; ctx.fillText(Math.round(total * 100) + '% completato', W - m - cell * .5, hy + hh / 2 + 1);
+    const rx = cell * 1.5, ry = cell * .85, lx = W - m - rx * .8, ly = hy + hh / 2;
+    ctx.textAlign = 'right'; ctx.fillText(Math.round(total * 100) + '% completato', lx - rx - cell * .4, ly + 1);
     ctx.shadowBlur = 0;
+    drawLogo(lx, ly, rx, ry);
     // doppia riga sopra e sotto la griglia
     const lw = Math.max(2, cell * .06), gap = cell * .16;
     ctx.lineWidth = lw * .7;
